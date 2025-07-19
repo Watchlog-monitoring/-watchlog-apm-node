@@ -2,17 +2,18 @@
 
 🔗 **Website**: [https://watchlog.io](https://watchlog.io)
 
-Lightweight APM (Application Performance Monitoring) library for Node.js, built on OpenTelemetry. Provides out-of-the-box auto-instrumentation and makes it easy to add custom spans.
+Lightweight APM (Application Performance Monitoring) library for Node.js, built on OpenTelemetry. Provides out-of-the-box auto-instrumentation and flexible controls over which spans are sent.
 
 ---
 
 ## Features
 
 * Auto-instrumentation for HTTP, Express, MongoDB, gRPC, and more
-* Custom span creation for manual instrumentation
+* Manual custom spans via OpenTelemetry API
 * OTLP exporter over HTTP (protobuf) for compact transport
-* Automatically detects runtime environment (local vs Kubernetes)
-* Configurable batching and metric export intervals
+* Environment detection (local vs Kubernetes in-cluster)
+* Configurable sampling, error-only and slow-only span export
+* Adjustable batching and metric export intervals
 
 ---
 
@@ -20,7 +21,7 @@ Lightweight APM (Application Performance Monitoring) library for Node.js, built 
 
 ```bash
 npm install @watchlog/apm
-# or using yarn
+# or
 yarn add @watchlog/apm
 ```
 
@@ -28,104 +29,90 @@ yarn add @watchlog/apm
 
 ## Quick Start
 
-In your main application entry (e.g., `index.js`), initialize the SDK **before** importing any other modules:
+Load **before** any other modules to ensure full auto-instrumentation:
 
 ```js
-// Auto-instrumentation — must be first
+// index.js — must be first
 const { instrument } = require('@watchlog/apm');
 
-// Provide your application name and any custom options
-instrument({
-  app: 'testapp',
+// Initialize with your service name and options
+const sdk = instrument({
+  app: 'my-service',          // your application name
+  errorTPS: 5,                // max 5 error spans/sec
+  sendErrorTraces: true,      // always send error spans
+  slowThresholdMs: 300,       // always send spans slower than 300ms
+  sampleRate: 1               // random sample rate (0.0–1.0, capped at 0.3)
 });
 
-// Continue with the rest of your imports
+// Continue loading your application
 const express = require('express');
 const app = express();
 
-app.get('/', (req, res) => {
-  res.send('Hello World!');
-});
-
-app.listen(3000, () => console.log('Server listening on port 3000'));
+app.get('/', (req, res) => res.send('Hello World!'));
+app.listen(3000, () => console.log('Listening on 3000'));
 ```
 
-**What happens under the hood:**
+**Under the hood:**
 
-* The SDK auto-instruments supported libraries (HTTP, Express, MongoDB, etc.)
-* Traces and metrics are exported to your Watchlog APM endpoint
-* Environment detection routes metrics to `localhost` or the in-cluster Kubernetes service
+1. Auto-instrumentation hooks supported libraries (HTTP, MongoDB, etc.)
+2. Exports OTLP spans and metrics to your Watchlog endpoint
+3. Detects runtime and targets `localhost` or in-cluster Watchlog agent
 
 ---
 
 ## Custom Spans
 
-You can create manual spans around arbitrary code sections to measure performance or record metadata.
+Use the OpenTelemetry API directly for manual instrumentation:
 
 ```js
-const api = require('express')();
-const { trace } = require('@opentelemetry/api'); // Use OpenTelemetry API directly
+const { trace } = require('@opentelemetry/api');
 
-api.get('/users/:id', async (req, res) => {
-  // Get a tracer instance by name (matches your service name)
+app.get('/db', async (req, res) => {
   const tracer = trace.getTracer('watchlog-apm', '1.0.0');
-
-  // Start a custom span
-  const span = tracer.startSpan('fetch-user-from-db', {
+  const span = tracer.startSpan('fetch-user', {
     attributes: { 'db.system': 'mongodb', 'db.operation': 'find' }
   });
 
   try {
-    // Run your code inside a context with the active span
-    const result = await tracer.withSpan(span, async () => {
-      return await UserModel.findById(req.params.id);
-    });
-
+    const result = await tracer.withSpan(span, () => User.find());
     res.json(result);
   } catch (err) {
-    // Record any errors
     span.recordException(err);
     res.status(500).send('Error');
   } finally {
-    // End the span
     span.end();
   }
 });
 ```
 
-**Key points:**
-
-1. Import the OpenTelemetry API (`@opentelemetry/api`) to access tracing utilities.
-2. Obtain a `Tracer` via `trace.getTracer(serviceName, serviceVersion)`.
-3. Call `tracer.startSpan(name, options)` to create a new span.
-4. Use `tracer.withSpan(span, fn)` or `context.with()` to run code in the span context.
-5. Record attributes and exceptions as needed.
-6. Always call `span.end()` when the operation is complete.
-
 ---
 
 ## Configuration Options
 
-| Option                 | Type     | Default                                             | Description                               |
-| ---------------------- | -------- | --------------------------------------------------- | ----------------------------------------- |
-| `app`                  | `string` | `node-app`                                          | Name of your application/service          |
-| `url`                  | `string` | *auto-detected*                                     | Base OTLP endpoint (overrides detection)  |
-| `headers`              | `object` | `{}`                                                | Additional HTTP headers for the exporters |
-| `batchOptions`         | `object` | `{ maxBatchSize: 200, scheduledDelayMillis: 5000 }` | Settings for the `BatchSpanProcessor`     |
-| `metricIntervalMillis` | `number` | `5000`                                              | Interval (ms) for exporting metrics       |
+| Option                 | Type      | Default                                           | Description                                                             |
+| ---------------------- | --------- | ------------------------------------------------- | ----------------------------------------------------------------------- |
+| `app`                  | `string`  | `node-app`                                        | Name of your application/service                                        |
+| `url`                  | `string`  | *auto-detected*                                   | Base OTLP endpoint (overrides detection)                                |
+| `headers`              | `object`  | `{}`                                              | Additional HTTP headers for the exporters                               |
+| `batchOptions`         | `object`  | `{ maxBatchSize:200, scheduledDelayMillis:5000 }` | Settings for the OTLP batch processor                                   |
+| `metricIntervalMillis` | `number`  | `5000`                                            | Interval (ms) for exporting metrics                                     |
+| `sampleRate`           | `number`  | `1.0`                                             | Random sampling rate 0.0–1.0 (capped at **0.3**) for non-filtered spans |
+| `sendErrorTraces`      | `boolean` | `false`                                           | If `true`, always export spans with non-`UNSET` status                  |
+| `errorTPS`             | `number`  | `Infinity`                                        | Maximum number of error spans to export per second                      |
+| `slowThresholdMs`      | `number`  | `0`                                               | If >0, always export spans whose duration exceeds this threshold        |
 
 ---
 
 ## Environment Detection
 
-* **Local / non-K8s**: sends to `http://127.0.0.1:3774/apm`
-* **Kubernetes**: if running in-cluster, sends to `http://watchlog-node-agent.monitoring.svc.cluster.local:3774/apm`
+* **Local / non-K8s**: `http://127.0.0.1:3774/apm`
+* **Kubernetes**: `http://watchlog-node-agent.monitoring.svc.cluster.local:3774/apm`
 
-Detection methods include:
+Detection steps:
 
-1. Presence of serviceaccount token (`/var/run/secrets/kubernetes.io/serviceaccount/token`)
-2. `cgroup` file containing `kubepods`
-3. DNS lookup of `kubernetes.default.svc.cluster.local`
+1. Check for Kubernetes serviceaccount token file
+2. Inspect `/proc/1/cgroup` for `kubepods`
+3. DNS lookup for `kubernetes.default.svc.cluster.local`
 
 ---
 

@@ -4,78 +4,148 @@ const { OTLPTraceExporter, OTLPMetricExporter } = require('@opentelemetry/export
 const { getNodeAutoInstrumentations } = require('@opentelemetry/auto-instrumentations-node');
 const { BatchSpanProcessor } = require('@opentelemetry/sdk-trace-base');
 const { PeriodicExportingMetricReader } = require('@opentelemetry/sdk-metrics');
-
+const { SpanStatusCode } = require('@opentelemetry/api');
 const fs = require('fs');
-const dns = require('dns');
-const { promisify } = require('util');
-const lookup = promisify(dns.lookup);
 
-// — تشخیص اجرای داخل Kubernetes —
-async function isRunningInK8s() {
-  const tokenPath = '/var/run/secrets/kubernetes.io/serviceaccount/token';
-  if (fs.existsSync(tokenPath)) return true;
+// — سینک تشخیص اجرای داخل Kubernetes —
+function isRunningInK8sSync() {
+  if (fs.existsSync('/var/run/secrets/kubernetes.io/serviceaccount/token')) return true;
   try {
-    const cgroup = fs.readFileSync('/proc/1/cgroup', 'utf8');
-    if (cgroup.includes('kubepods')) return true;
-  } catch {}
-  try {
-    await lookup('kubernetes.default.svc.cluster.local');
-    return true;
-  } catch {}
+    const c = fs.readFileSync('/proc/1/cgroup', 'utf8');
+    if (c.includes('kubepods')) return true;
+  } catch { }
   return false;
 }
-
-// — کِش و برگشت URL مناسب —
-let cachedServerURL = null;
-async function getServerURL() {
-  if (cachedServerURL) return cachedServerURL;
-  if (await isRunningInK8s()) {
-    cachedServerURL = 'http://watchlog-node-agent.monitoring.svc.cluster.local:3774/apm';
-  } else {
-    cachedServerURL = 'http://127.0.0.1:3774/apm';
-  }
-  return cachedServerURL;
+function getServerURLSync(defaultUrl) {
+  return isRunningInK8sSync()
+    ? 'http://watchlog-node-agent.monitoring.svc.cluster.local:3774/apm'
+    : defaultUrl;
 }
 
-async function instrument(options = {}) {
+// — یک پردازشگر ساده برای فیلتر اسپن‌ها —
+class FilteringSpanProcessor {
+  constructor(filterFn, wrappedProcessor) {
+    this._filterFn = filterFn;
+    this._wrapped = wrappedProcessor;
+  }
+  onStart(span, parentContext) {
+    this._wrapped.onStart(span, parentContext);
+  }
+  onEnd(span) {
+    if (this._filterFn(span)) {
+      this._wrapped.onEnd(span);
+    }
+  }
+  shutdown() {
+    return this._wrapped.shutdown();
+  }
+  forceFlush() {
+    return this._wrapped.forceFlush();
+  }
+}
+
+/**
+ * options:
+ *   url                   – Base OTLP endpoint
+ *   app                   – نام سرویس
+ *   headers               – HTTP headers
+ *   batchOptions          – { maxBatchSize, scheduledDelayMillis }
+ *   metricIntervalMillis  – بازه‌ ارسال متریک‌ها
+ *   errorTPS              – حداکثر تعداد اسپن خطا در ثانیه (default: Infinity)
+ *   sendErrorTraces       – اگر true باشد، اسپن‌های خطا تحت قوانین TPS قرار می‌گیرند
+ *   slowThresholdMs       – آستانه‌ی میلی‌ثانیه برای اسپن‌های “کند” (default: 0)
+ *   sampleRate            – نرخ نمونه‌برداری رندوم بقیه‌ی اسپن‌ها (0–1، حداکثر 0.3)
+ */
+function instrument(options = {}) {
   const {
-    // اگر کاربر صراحتاً url بده، استفاده می‌کنیم
-    url: userUrl,
+    url = 'http://localhost:3774/apm',
     app = 'node-app',
     headers = {},
     batchOptions = {},
-    metricIntervalMillis = 5000
+    metricIntervalMillis = 5000,
+    errorTPS = Infinity,
+    sendErrorTraces = false,
+    slowThresholdMs = 0,
+    sampleRate = 1.0
   } = options;
 
-  // تعیین URL اتوماتیک بر اساس محیط
-  const baseUrl = userUrl || await getServerURL();
+  const effectiveSampleRate = Math.min(sampleRate, 0.3);
+  const baseUrl = getServerURLSync(url);
+  console.log('🔍 Watchlog APM endpoint:', baseUrl);
 
-  process.env.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL  = 'http/protobuf';
-  process.env.OTEL_EXPORTER_OTLP_METRICS_PROTOCOL = 'http/protobuf';
+  const traceExporter = new OTLPTraceExporter({ url: `${baseUrl}/${app}/v1/traces`, headers });
+  const metricExporter = new OTLPMetricExporter({ url: `${baseUrl}/${app}/v1/metrics`, headers });
 
-  const traceExporter = new OTLPTraceExporter({
-    url: `${baseUrl}/${app}/v1/traces`,
-    headers
+  const bsp = new BatchSpanProcessor(traceExporter, {
+    maxExportBatchSize: batchOptions.maxBatchSize || 200,
+    scheduledDelayMillis: batchOptions.scheduledDelayMillis || 5000
   });
-  const metricExporter = new OTLPMetricExporter({
-    url: `${baseUrl}/${app}/v1/metrics`,
-    headers
-  });
+
+  // متغیرهای شمارش خطا در هر ثانیه
+  let lastSec = Math.floor(Date.now() / 1000);
+  let errCount = 0;
+
+  function spanFilter(span) {
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (nowSec !== lastSec) {
+      lastSec = nowSec;
+      errCount = 0;
+    }
+
+    // 1) اسپن‌های خطا (محدود به errorTPS در ثانیه)
+    if (span.status.code !== SpanStatusCode.UNSET) {
+      if (sendErrorTraces) {
+        if (errCount < errorTPS) {
+          errCount++;
+          return true;
+        }
+        return false;
+      }
+      // اگر sendErrorTraces=false، خطاها تابع نمونه‌برداری عادی را دنبال می‌کنند
+    }
+
+    // 2) اسپن‌های کند (اگر آستانه تنظیم شده)
+    if (slowThresholdMs > 0) {
+      const [sS, sN] = span.startTime;
+      const [eS, eN] = span.endTime;
+      const durMs = ((eS - sS) * 1e3) + ((eN - sN) / 1e6);
+      if (durMs > slowThresholdMs) {
+        return true;
+      }
+    }
+
+    // 3) نمونه‌برداری رندوم برای بقیه
+    if (effectiveSampleRate < 1.0) {
+      return Math.random() < effectiveSampleRate;
+    }
+
+    // 4) در غیر این‌صورت همه را ارسال کن
+    return true;
+  }
+
+  let spanProcessor = bsp;
+  if (sendErrorTraces || slowThresholdMs > 0 || effectiveSampleRate < 1.0) {
+    spanProcessor = new FilteringSpanProcessor(spanFilter, bsp);
+  }
 
   const sdk = new NodeSDK({
-    instrumentations: [ getNodeAutoInstrumentations() ],
-    spanProcessor: new BatchSpanProcessor(traceExporter, {
-      maxExportBatchSize: batchOptions.maxBatchSize  || 200,
-      scheduledDelayMillis: batchOptions.scheduledDelayMillis || 5000
-    }),
+    instrumentations: [getNodeAutoInstrumentations()],
+    spanProcessor,
     metricReader: new PeriodicExportingMetricReader({
       exporter: metricExporter,
       exportIntervalMillis: metricIntervalMillis
     })
   });
 
-  await sdk.start();
-  console.log('🔺 Watchlog APM instrumentation started on', baseUrl);
+  try {
+    sdk.start()
+    console.log('🔺 Watchlog APM instrumentation started')
+  } catch (err) {
+    console.error('❌ Watchlog APM failed to start:', err)
+
+  }
+
+
   return sdk;
 }
 
