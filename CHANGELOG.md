@@ -1,3 +1,10 @@
+## [1.0.2](https://github.com/Watchlog-monitoring/-watchlog-apm-node/compare/1.0.1...1.0.2) (2025-07-19)
+
+
+### Bug Fixes
+
+* change readme file ([bf77b12](https://github.com/Watchlog-monitoring/-watchlog-apm-node/commit/bf77b12838e0e921004e2d286ac3fed87b03e2ea))
+
 ## [1.0.1](https://github.com/Watchlog-monitoring/-watchlog-apm-node/compare/1.0.0...1.0.1) (2025-07-19)
 
 
