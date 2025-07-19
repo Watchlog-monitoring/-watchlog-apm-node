@@ -1,3 +1,10 @@
+## [1.0.3](https://github.com/Watchlog-monitoring/-watchlog-apm-node/compare/1.0.2...1.0.3) (2025-07-19)
+
+
+### Bug Fixes
+
+* add options to apm and fix bugs ([440553b](https://github.com/Watchlog-monitoring/-watchlog-apm-node/commit/440553b57f0f7af8d9b59ebc233dc090f5babff8))
+
 ## [1.0.2](https://github.com/Watchlog-monitoring/-watchlog-apm-node/compare/1.0.1...1.0.2) (2025-07-19)
 
 
