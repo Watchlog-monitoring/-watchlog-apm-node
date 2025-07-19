@@ -37,9 +37,6 @@ const { instrument } = require('@watchlog/apm');
 // Provide your application name and any custom options
 instrument({
   app: 'testapp',
-  headers: { 'api-key': 'YOUR_KEY' },
-  batchOptions: { maxBatchSize: 100, scheduledDelayMillis: 2000 },
-  metricIntervalMillis: 5000
 });
 
 // Continue with the rest of your imports
