@@ -16,7 +16,12 @@ function isRunningInK8sSync() {
   } catch { }
   return false;
 }
-function getServerURLSync(defaultUrl) {
+function getServerURLSync(defaultUrl, userProvidedUrl) {
+  // If user explicitly provided a URL (via env var or option), use it directly (skip auto-detection)
+  if (userProvidedUrl) {
+    return userProvidedUrl;
+  }
+  // Otherwise, use auto-detection
   return isRunningInK8sSync()
     ? 'http://watchlog-node-agent.monitoring.svc.cluster.local:3774/apm'
     : defaultUrl;
@@ -58,7 +63,7 @@ class FilteringSpanProcessor {
  */
 function instrument(options = {}) {
   const {
-    url = 'http://localhost:3774/apm',
+    url,
     app = 'node-app',
     headers = {},
     batchOptions = {},
@@ -70,7 +75,15 @@ function instrument(options = {}) {
   } = options;
 
   const effectiveSampleRate = Math.min(sampleRate, 0.3);
-  const baseUrl = getServerURLSync(url);
+  // Priority: 1) Environment variable, 2) url option, 3) auto-detection
+  const defaultUrl = 'http://localhost:3774/apm';
+  const envUrl = process.env.WATCHLOG_APM_ENDPOINT;
+  const userUrl = envUrl || url; // env var takes precedence over option
+  
+  // If user provided URL (env var or option), use it directly (skip auto-detection)
+  // Otherwise, use auto-detection
+  const baseUrl = getServerURLSync(defaultUrl, userUrl);
+  
   console.log('🔍 Watchlog APM endpoint:', baseUrl);
 
   const traceExporter = new OTLPTraceExporter({ url: `${baseUrl}/${app}/v1/traces`, headers });

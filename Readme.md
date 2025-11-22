@@ -92,7 +92,7 @@ app.get('/db', async (req, res) => {
 | Option                 | Type      | Default                                           | Description                                                             |
 | ---------------------- | --------- | ------------------------------------------------- | ----------------------------------------------------------------------- |
 | `app`                  | `string`  | `node-app`                                        | Name of your application/service                                        |
-| `url`                  | `string`  | *auto-detected*                                   | Base OTLP endpoint (overrides detection)                                |
+| `url`                  | `string`  | *auto-detected*                                   | Base OTLP endpoint (overrides detection). Can also be set via `WATCHLOG_APM_ENDPOINT` env var |
 | `headers`              | `object`  | `{}`                                              | Additional HTTP headers for the exporters                               |
 | `batchOptions`         | `object`  | `{ maxBatchSize:200, scheduledDelayMillis:5000 }` | Settings for the OTLP batch processor                                   |
 | `metricIntervalMillis` | `number`  | `5000`                                            | Interval (ms) for exporting metrics                                     |
@@ -101,11 +101,18 @@ app.get('/db', async (req, res) => {
 | `errorTPS`             | `number`  | `Infinity`                                        | Maximum number of error spans to export per second                      |
 | `slowThresholdMs`      | `number`  | `0`                                               | If >0, always export spans whose duration exceeds this threshold        |
 
+**Note:** The `url` option can be overridden by the `WATCHLOG_APM_ENDPOINT` environment variable. Priority order:
+1. `WATCHLOG_APM_ENDPOINT` environment variable (highest priority)
+2. `url` option in `instrument()` function
+3. Auto-detection (local or Kubernetes)
+
 ---
 
 ## Environment Detection
 
-* **Local / non-K8s**: `http://127.0.0.1:3774/apm`
+The package automatically detects the runtime environment:
+
+* **Local / non-K8s**: `http://localhost:3774/apm`
 * **Kubernetes**: `http://watchlog-node-agent.monitoring.svc.cluster.local:3774/apm`
 
 Detection steps:
@@ -113,6 +120,121 @@ Detection steps:
 1. Check for Kubernetes serviceaccount token file
 2. Inspect `/proc/1/cgroup` for `kubepods`
 3. DNS lookup for `kubernetes.default.svc.cluster.local`
+
+**Manual Override:** You can override the endpoint by:
+- Passing `url` option in `instrument()` function
+- Setting `WATCHLOG_APM_ENDPOINT` environment variable
+
+---
+
+## Docker Setup
+
+When running your Node.js app in Docker, you need to configure the correct agent endpoint.
+
+### Using Environment Variable (Recommended)
+
+```js
+// index.js
+const { instrument } = require('@watchlog/apm');
+
+const sdk = instrument({
+  app: 'my-service',
+  // url will be read from WATCHLOG_APM_ENDPOINT env var if set
+  errorTPS: 5,
+  sendErrorTraces: true,
+  slowThresholdMs: 300,
+  sampleRate: 1
+});
+
+const express = require('express');
+const app = express();
+app.get('/', (req, res) => res.send('Hello World!'));
+app.listen(3000);
+```
+
+**Docker Compose Example:**
+```yaml
+version: '3.8'
+
+services:
+  watchlog-agent:
+    image: watchlog/agent:latest
+    container_name: watchlog-agent
+    ports:
+      - "3774:3774"
+    environment:
+      - WATCHLOG_APIKEY=your-api-key
+      - WATCHLOG_SERVER=https://log.watchlog.ir
+    networks:
+      - app-network
+
+  node-app:
+    build: .
+    container_name: node-app
+    ports:
+      - "3000:3000"
+    environment:
+      - WATCHLOG_APM_ENDPOINT=http://watchlog-agent:3774/apm
+      - NODE_ENV=production
+    depends_on:
+      - watchlog-agent
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+```
+
+**Docker Run Example:**
+```bash
+# 1. Create network
+docker network create app-network
+
+# 2. Run Watchlog Agent
+docker run -d \
+  --name watchlog-agent \
+  --network app-network \
+  -p 3774:3774 \
+  -e WATCHLOG_APIKEY="your-api-key" \
+  -e WATCHLOG_SERVER="https://log.watchlog.ir" \
+  watchlog/agent:latest
+
+# 3. Run Node.js app
+docker run -d \
+  --name node-app \
+  --network app-network \
+  -p 3000:3000 \
+  -e WATCHLOG_APM_ENDPOINT="http://watchlog-agent:3774/apm" \
+  my-node-app
+```
+
+### Using URL Option Directly
+
+```js
+// index.js
+const { instrument } = require('@watchlog/apm');
+
+const sdk = instrument({
+  app: 'my-service',
+  url: 'http://watchlog-agent:3774/apm',  // Explicit agent URL
+  errorTPS: 5,
+  sendErrorTraces: true,
+  slowThresholdMs: 300,
+  sampleRate: 1
+});
+
+const express = require('express');
+const app = express();
+app.get('/', (req, res) => res.send('Hello World!'));
+app.listen(3000);
+```
+
+**Important Notes:**
+- When using Docker, use the container name as the hostname (e.g., `watchlog-agent`)
+- Both containers must be on the same Docker network
+- The agent must be running before your app starts
+- Environment variable `WATCHLOG_APM_ENDPOINT` takes precedence over the `url` option
 
 ---
 
