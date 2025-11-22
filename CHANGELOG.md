@@ -1,3 +1,10 @@
+## [1.0.4](https://github.com/Watchlog-monitoring/-watchlog-apm-node/compare/1.0.3...1.0.4) (2025-11-22)
+
+
+### Bug Fixes
+
+* get agent endpoint in service ([beba295](https://github.com/Watchlog-monitoring/-watchlog-apm-node/commit/beba29553de19384f851ce9da3dd18fd1d009678))
+
 ## [1.0.3](https://github.com/Watchlog-monitoring/-watchlog-apm-node/compare/1.0.2...1.0.3) (2025-07-19)
 
 
