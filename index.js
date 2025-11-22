@@ -75,14 +75,12 @@ function instrument(options = {}) {
   } = options;
 
   const effectiveSampleRate = Math.min(sampleRate, 0.3);
-  // Priority: 1) Environment variable, 2) url option, 3) auto-detection
+  // Priority: 1) url option, 2) auto-detection
   const defaultUrl = 'http://localhost:3774/apm';
-  const envUrl = process.env.WATCHLOG_APM_ENDPOINT;
-  const userUrl = envUrl || url; // env var takes precedence over option
   
-  // If user provided URL (env var or option), use it directly (skip auto-detection)
+  // If user provided URL via option, use it directly (skip auto-detection)
   // Otherwise, use auto-detection
-  const baseUrl = getServerURLSync(defaultUrl, userUrl);
+  const baseUrl = getServerURLSync(defaultUrl, url);
   
   console.log('🔍 Watchlog APM endpoint:', baseUrl);
 
