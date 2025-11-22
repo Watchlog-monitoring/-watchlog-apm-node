@@ -1,3 +1,10 @@
+## [1.0.5](https://github.com/Watchlog-monitoring/-watchlog-apm-node/compare/1.0.4...1.0.5) (2025-11-22)
+
+
+### Bug Fixes
+
+* get agent url in instruments ([452a751](https://github.com/Watchlog-monitoring/-watchlog-apm-node/commit/452a751220b2c679653d6edba5c30d33905e8b19))
+
 ## [1.0.4](https://github.com/Watchlog-monitoring/-watchlog-apm-node/compare/1.0.3...1.0.4) (2025-11-22)
 
 
